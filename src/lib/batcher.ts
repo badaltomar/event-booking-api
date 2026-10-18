@@ -1,6 +1,11 @@
+const RETRY_DELAYS_MS = [200, 1_000, 3_000];
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * Collects items and hands them to `flush` in groups, either when the group is full or after a
  * short delay. One Redis round trip for a whole group costs far less than one round trip per item.
+ * A group that fails to send is retried a few times before it is reported through `onError`.
  */
 export class Batcher<T> {
   private items: T[] = [];
@@ -38,6 +43,22 @@ export class Batcher<T> {
 
     const batch = this.items;
     this.items = [];
-    this.inFlight = this.inFlight.then(() => this.flush(batch)).catch((err) => this.onError(err, batch));
+    this.inFlight = this.inFlight.then(() => this.send(batch));
+  }
+
+  private async send(batch: T[]): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await this.flush(batch);
+        return;
+      } catch (err) {
+        const delay = RETRY_DELAYS_MS[attempt];
+        if (delay === undefined) {
+          this.onError(err, batch);
+          return;
+        }
+        await wait(delay);
+      }
+    }
   }
 }

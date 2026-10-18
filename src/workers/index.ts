@@ -25,7 +25,6 @@ interface BookingEmailRow {
   id: string;
   quantity: number;
   total_cents: number;
-  confirmation_sent_at: Date | null;
   customer_name: string;
   customer_email: string;
   title: string;
@@ -34,9 +33,6 @@ interface BookingEmailRow {
 }
 
 const FANOUT_BATCH_SIZE = 1_000;
-const RECONCILE_EVERY_MS = 60_000;
-const RECONCILE_AFTER_MINUTES = 2;
-const RECONCILE_BATCH_SIZE = 500;
 
 export async function startWorkers(deps: WorkerDeps): Promise<{ close(): Promise<void> }> {
   const { db, mailer, queues, connection, concurrency, log } = deps;
@@ -45,7 +41,7 @@ export async function startWorkers(deps: WorkerDeps): Promise<{ close(): Promise
     QUEUE_NAMES.bookingConfirmation,
     async (job) => {
       const { rows } = await db.query<BookingEmailRow>(
-        `SELECT b.id, b.quantity, b.total_cents, b.confirmation_sent_at,
+        `SELECT b.id, b.quantity, b.total_cents,
                 u.name AS customer_name, u.email AS customer_email,
                 e.title, e.venue, e.starts_at
            FROM bookings b
@@ -55,7 +51,7 @@ export async function startWorkers(deps: WorkerDeps): Promise<{ close(): Promise
         [job.data.bookingId],
       );
       const row = rows[0];
-      if (!row || row.confirmation_sent_at) return;
+      if (!row) return;
 
       await mailer.send({
         to: row.customer_email,
@@ -70,7 +66,6 @@ export async function startWorkers(deps: WorkerDeps): Promise<{ close(): Promise
           startsAt: row.starts_at,
         }),
       });
-      await db.query('UPDATE bookings SET confirmation_sent_at = now() WHERE id = $1', [row.id]);
     },
     { connection, concurrency },
   );
@@ -135,36 +130,7 @@ export async function startWorkers(deps: WorkerDeps): Promise<{ close(): Promise
     { connection, concurrency },
   );
 
-  // Safety net for the one gap in the flow: a booking that committed while Redis was unreachable
-  // has no email job. Bookings still unconfirmed after a couple of minutes are queued again.
-  const maintenanceWorker = new Worker(
-    QUEUE_NAMES.maintenance,
-    async () => {
-      const { rows } = await db.query<{ id: string }>(
-        `SELECT id FROM bookings
-          WHERE confirmation_sent_at IS NULL
-            AND created_at < now() - make_interval(mins => $1)
-          ORDER BY created_at
-          LIMIT $2`,
-        [RECONCILE_AFTER_MINUTES, RECONCILE_BATCH_SIZE],
-      );
-      if (rows.length === 0) return;
-
-      const window = Math.floor(Date.now() / (RECONCILE_EVERY_MS * 10));
-      await queues.bookingConfirmation.addBulk(
-        rows.map(({ id }) => ({
-          name: 'booking-confirmation',
-          data: { bookingId: id },
-          opts: { jobId: `booking-confirmation-${id}-retry-${window}` },
-        })),
-      );
-      log.warn({ count: rows.length }, 'requeued unconfirmed bookings');
-    },
-    { connection, concurrency: 1 },
-  );
-  await queues.maintenance.upsertJobScheduler('reconcile-confirmations', { every: RECONCILE_EVERY_MS });
-
-  const all = [confirmationWorker, fanoutWorker, eventUpdateWorker, maintenanceWorker];
+  const all = [confirmationWorker, fanoutWorker, eventUpdateWorker];
   for (const worker of all) {
     worker.on('failed', (job, err) => {
       log.error({ queue: worker.name, jobId: job?.id, attempts: job?.attemptsMade, err }, 'job failed');

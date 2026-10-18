@@ -1,0 +1,48 @@
+databases:
+  - name: booking-db
+    plan: free
+    databaseName: booking
+    user: booking
+
+services:
+  - type: keyvalue
+    name: booking-redis
+    plan: free
+    # BullMQ stores jobs in Redis, so keys must never be evicted to make room.
+    maxmemoryPolicy: noeviction
+    # An empty list keeps the instance reachable only from services in the same account and region.
+    ipAllowList: []
+
+  - type: web
+    name: event-booking-api
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: LOG_LEVEL
+        value: info
+      - key: PROCESS_ROLE
+        value: all
+      - key: DB_POOL_MAX
+        value: "15"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: booking-db
+          property: connectionString
+      - key: REDIS_URL
+        fromService:
+          type: keyvalue
+          name: booking-redis
+          property: connectionString
+      - key: JWT_SECRET
+        generateValue: true
+      - key: MAIL_DRIVER
+        value: brevo
+      - key: BREVO_API_KEY
+        sync: false
+      - key: MAIL_FROM_EMAIL
+        sync: false
+      - key: MAIL_FROM_NAME
+        value: Event Booking

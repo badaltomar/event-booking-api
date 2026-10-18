@@ -8,3 +8,4 @@ loadtest/.state
 .claude
 loadtest/results/last-run.json
 loadtest/results
+VIDEO_SCRIPT.md

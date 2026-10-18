@@ -119,20 +119,25 @@ export function createBookingService({ db, queues, log }: { db: Db; queues: Queu
     });
   }
 
-  async function findByIdempotencyKey(customerId: string, key: string) {
+  async function replayFor(customerId: string, key: string, eventId: string, quantity: number) {
     const { rows } = await db.query<BookingRow>(
       `SELECT id, event_id, customer_id, quantity, total_cents, created_at
          FROM bookings WHERE customer_id = $1 AND idempotency_key = $2`,
       [customerId, key],
     );
-    return rows[0];
+    const existing = rows[0];
+    if (!existing) return null;
+    if (existing.event_id !== eventId || existing.quantity !== quantity) {
+      throw conflict('IDEMPOTENCY_KEY_REUSED', 'This Idempotency-Key was already used for a different booking');
+    }
+    return { booking: toBooking(existing), replayed: true };
   }
 
-  // Confirmation jobs are queued in groups, off the request path. A group lost to a Redis outage
-  // is not fatal: the booking is already stored, and the reconcile job in the worker re-queues it.
+  // Confirmation jobs are queued in groups, off the request path, and retried if Redis blips.
+  // The booking itself is already stored by then, so a failure here never fails the request.
   const confirmations = new Batcher<{ name: string; data: { bookingId: string }; opts: { jobId: string } }>(
     (jobs) => queues.bookingConfirmation.addBulk(jobs).then(() => undefined),
-    (err, jobs) => log.error({ err, count: jobs.length }, 'could not queue booking confirmations'),
+    (err, jobs) => log.error({ err, count: jobs.length }, 'gave up queueing booking confirmations'),
   );
   const enqueueConfirmation = (bookingId: string) =>
     confirmations.add({
@@ -146,6 +151,11 @@ export function createBookingService({ db, queues, log }: { db: Db; queues: Queu
     flushPending: () => confirmations.close(),
 
     async create({ eventId, customerId, quantity, idempotencyKey }: CreateBookingInput) {
+      // Look first, so a retry still gets its booking back after the event has sold out.
+      // The unique index below remains the guard against two retries racing each other.
+      const replay = idempotencyKey ? await replayFor(customerId, idempotencyKey, eventId, quantity) : null;
+      if (replay) return replay;
+
       try {
         const { rows } = await db.query<BookingRow>(RESERVE_AND_BOOK, [
           eventId,
@@ -165,13 +175,8 @@ export function createBookingService({ db, queues, log }: { db: Db; queues: Queu
         return { booking: toBooking(booking), replayed: false };
       } catch (err) {
         if (idempotencyKey && isUniqueViolation(err)) {
-          const existing = await findByIdempotencyKey(customerId, idempotencyKey);
-          if (existing) {
-            if (existing.event_id !== eventId || existing.quantity !== quantity) {
-              throw conflict('IDEMPOTENCY_KEY_REUSED', 'This Idempotency-Key was already used for a different booking');
-            }
-            return { booking: toBooking(existing), replayed: true };
-          }
+          const replay = await replayFor(customerId, idempotencyKey, eventId, quantity);
+          if (replay) return replay;
         }
         throw err;
       }

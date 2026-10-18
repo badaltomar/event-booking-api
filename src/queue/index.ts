@@ -6,7 +6,6 @@ export const QUEUE_NAMES = {
   bookingConfirmation: 'booking-confirmation',
   eventUpdateFanout: 'event-update-fanout',
   eventUpdate: 'event-update',
-  maintenance: 'maintenance',
 } as const;
 
 export interface BookingConfirmationJob {
@@ -57,7 +56,6 @@ export interface Queues {
   bookingConfirmation: Queue<BookingConfirmationJob>;
   eventUpdateFanout: Queue<EventUpdateFanoutJob>;
   eventUpdate: Queue<EventUpdateEmailJob>;
-  maintenance: Queue;
   close(): Promise<void>;
 }
 
@@ -67,7 +65,6 @@ export function createQueues(connection: Redis): Queues {
     bookingConfirmation: new Queue<BookingConfirmationJob>(QUEUE_NAMES.bookingConfirmation, options),
     eventUpdateFanout: new Queue<EventUpdateFanoutJob>(QUEUE_NAMES.eventUpdateFanout, options),
     eventUpdate: new Queue<EventUpdateEmailJob>(QUEUE_NAMES.eventUpdate, options),
-    maintenance: new Queue(QUEUE_NAMES.maintenance, { connection }),
   };
   return {
     ...queues,

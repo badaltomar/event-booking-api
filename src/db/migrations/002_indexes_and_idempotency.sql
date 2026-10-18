@@ -9,7 +9,3 @@ CREATE INDEX bookings_customer_created_idx ON bookings (customer_id, created_at 
 ALTER TABLE bookings ADD COLUMN idempotency_key text;
 CREATE UNIQUE INDEX bookings_idempotency_key_idx ON bookings (customer_id, idempotency_key)
   WHERE idempotency_key IS NOT NULL;
-
--- Lets the email job run twice without sending twice, and lets a sweeper find lost jobs.
-ALTER TABLE bookings ADD COLUMN confirmation_sent_at timestamptz;
-CREATE INDEX bookings_unconfirmed_idx ON bookings (created_at) WHERE confirmation_sent_at IS NULL;

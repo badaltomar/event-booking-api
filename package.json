@@ -16,7 +16,8 @@
     "migrate": "tsx --env-file-if-exists=.env src/db/migrate-cli.ts",
     "loadtest:seed": "tsx --env-file-if-exists=.env loadtest/seed.ts",
     "loadtest:sweep": "tsx --env-file-if-exists=.env loadtest/sweep.ts",
-    "loadtest:updates": "tsx --env-file-if-exists=.env loadtest/updates.ts"
+    "loadtest:updates": "tsx --env-file-if-exists=.env loadtest/updates.ts",
+    "demo": "node scripts/demo.mjs"
   },
   "dependencies": {
     "@fastify/jwt": "^10.2.5",
