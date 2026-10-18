@@ -2,7 +2,7 @@
 
 Backend for an event booking system. Organizers create and manage events. Customers browse events and book tickets. Access is controlled by role. Booking confirmations and event update notifications are sent as real emails by background workers.
 
-- Live API: `https://YOUR-SERVICE.onrender.com` (docs at `/docs`)
+- Live API: `https://event-booking-api-c0gv.onrender.com` (docs at `/docs`)
 - Performance report: [docs/benchmarks](docs/benchmarks/README.md)
 
 **Stack:** Node.js 24, TypeScript, Fastify, PostgreSQL, Redis with BullMQ, Zod, Brevo for email, Docker, Render.
