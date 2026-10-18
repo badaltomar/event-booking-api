@@ -41,13 +41,39 @@ services:
       DATABASE_URL: postgres://postgres:postgres@postgres:5432/booking
       REDIS_URL: redis://redis:6379
       JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-0123456789abcdef}
-      DB_POOL_MAX: ${DB_POOL_MAX:-10}
+      DB_POOL_MAX: ${DB_POOL_MAX:-20}
+      PROCESS_ROLE: ${PROCESS_ROLE:-all}
+      MAX_IN_FLIGHT: ${MAX_IN_FLIGHT:-2000}
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-10}
       MAIL_DRIVER: json
+      NODE_OPTIONS: ${NODE_OPTIONS:-}
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # Optional: run with `--profile split` and PROCESS_ROLE=api on the api service to move
+  # the email workers into their own container.
+  worker:
+    profiles: ["split"]
+    build: .
+    cpus: 0.5
+    mem_limit: 256m
+    environment:
+      NODE_ENV: production
+      LOG_LEVEL: warn
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/booking
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: ${JWT_SECRET:-dev-only-secret-change-me-0123456789abcdef}
+      DB_POOL_MAX: 10
+      PROCESS_ROLE: worker
+      RUN_MIGRATIONS: "false"
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-10}
+      MAIL_DRIVER: json
+    depends_on:
+      api:
+        condition: service_started
 
 volumes:
   pgdata:
