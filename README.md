@@ -148,7 +148,7 @@ The task asked how many users can book at the same time and where the first impl
 |---|---|---|
 | Bookings per second | about 430 | about 1,150 |
 | p95 latency at 800 concurrent users | 2.2 s | 0.7 s |
-| 5,000 users booking at the same instant | up to 2,422 dropped, p95 7 to 10 s | none dropped, p95 3.6 to 4.7 s |
+| 8,000 users booking at the same instant | 5,400 to 7,100 dropped | 1,600 to 5,400 dropped, usually about half as many |
 | `PATCH` on an event with 20,000 bookers | 14.7 s | 21 ms |
 
 The first version is kept as the git tag `v1-baseline`. The branch `baseline` is that code plus the load test tools, so the breaking point can be reproduced.

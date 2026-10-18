@@ -44,18 +44,21 @@ What it says:
 - At 3,200 users both versions are saturated and start dropping some requests, but v2 finishes about three times as many bookings in the same time.
 - The worst runs are much lower for both versions when the laptop throttles: v1 fell to about 140 requests/s and v2 to about 400 to 500. At 3,200 users v2 was ahead in both back to back pairs, about 1,000 to 1,100 requests/s against 260 to 410.
 
-## Result 2: everyone at the same instant (spike, 5,000 users, 2,500 tickets)
+## Result 2: everyone at the same instant (spike, N users, N / 2 tickets)
 
-| | v1 | v2 |
-|---|---|---|
-| Dropped (no answer in 10 s) | 0 to 2,422 | 0 |
-| p95 latency | 7.2 to 9.6 s | 3.6 to 4.7 s |
-| Told "busy, retry in 1 s" (HTTP 503) | 0 | 0 to 820 |
-| Oversold tickets | 0 | 0 |
+Here the load generator and the API share one laptop, and this scenario is the noisiest one, so read it as a rough picture.
 
-At 3,000 simultaneous users v1 had p95 5.2 s and v2 had p95 1.6 s. At 8,000 simultaneous users v1 dropped 7,068 requests.
+| Users at the same instant | v1 dropped | v2 dropped |
+|---:|---:|---:|
+| 3,000 | 0 | 0 |
+| 5,000 | 0 to 2,422 | 0 to 96 |
+| 8,000 | 5,381 to 7,068 | 1,634 to 5,413 |
 
-In v2 the server refuses work it cannot finish soon: past 2,000 requests in flight it answers `503` with `Retry-After: 1` straight away. A fast "try again" is better for the user than a request that hangs for ten seconds and then dies.
+- Up to 5,000 users neither version loses many requests, but both are slow. p95 is 3.8 to 4.1 s at 3,000 users and 6.6 to 7.1 s at 5,000 users for both.
+- At 8,000 users both lose requests that get no answer in 10 seconds. The optimized version loses fewer, in most runs about half as many, because it finishes bookings faster.
+- No run ever oversold a ticket.
+
+In v2 the server also refuses work it cannot finish soon: past 2,000 requests in flight it answers `503` with `Retry-After: 1` straight away. A fast "try again" is better for the user than a request that hangs for ten seconds and then dies.
 
 ## Result 3: updating an event that many customers booked
 
