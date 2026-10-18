@@ -5,6 +5,7 @@ import { createInterface } from 'node:readline/promises';
 import { parseArgs } from 'node:util';
 
 const { values } = parseArgs({
+  allowNegative: true,
   options: {
     url: { type: 'string', default: 'http://localhost:3000' },
     email: { type: 'string' },
