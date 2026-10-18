@@ -74,6 +74,30 @@ The organizer sends one `PATCH` that changes the venue. The time is how long tha
 
 v1 queued one email job per customer inside the request, so the call took as long as the customer list. v2 queues one job and a worker expands it into one email job per customer, a page at a time. The emails still take time to go out (22 s for 20,000 customers), but the organizer's call no longer waits for them.
 
+## Second machine (the run shown in the demo video)
+
+The same tests on a different laptop, with the same 1 CPU container limit. Every row's data check said `yes`.
+
+Sustained, 15 seconds per level:
+
+| Concurrent users | v1 requests/s | v1 p95 | v2 requests/s | v2 p95 |
+|---:|---:|---:|---:|---:|
+| 200 | 465 | 0.60 s | 1,302 | 0.25 s |
+| 800 | 513 | 1.7 s | 1,431 | 0.64 s |
+| 3,200 | 460 | 6.9 s | 1,473 | 4.0 s |
+
+At 3,200 users v1 dropped nothing but answered very slowly. v2 dropped 407 requests and answered 7,125 with a quick `503` retry message, while still finishing about 16,600 bookings against about 9,600 for v1.
+
+Everyone at the same instant, with half as many tickets as users:
+
+| Users | v1 dropped | v2 dropped |
+|---:|---:|---:|
+| 3,000 | 0 | 0 |
+| 5,000 | 0 | 96 |
+| 8,000 | 5,381 | 2,645 |
+
+Taken together with the first machine, the optimized version handles about 2.5 to 3 times more bookings per second, with the same shape of result on both laptops.
+
 ## What changed, and why it helped
 
 | Change | Problem it fixed |

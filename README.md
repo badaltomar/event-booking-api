@@ -151,6 +151,8 @@ The task asked how many users can book at the same time and where the first impl
 | 8,000 users booking at the same instant | 5,400 to 7,100 dropped | 1,600 to 5,400 dropped, usually about half as many |
 | `PATCH` on an event with 20,000 bookers | 14.7 s | 21 ms |
 
+On a second laptop (the run shown in the demo video) the same sustained test gave 460 to 513 bookings per second for the first version and 1,300 to 1,470 for the optimized one. Both runs are in the benchmark report.
+
 The first version is kept as the git tag `v1-baseline`. The branch `baseline` is that code plus the load test tools, so the breaking point can be reproduced.
 
 The load test is a set of scripts under `loadtest/`:
