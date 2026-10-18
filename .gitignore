@@ -1,0 +1,8 @@
+node_modules
+dist
+.env
+*.log
+coverage
+loadtest/tokens.json
+loadtest/.state
+.claude
