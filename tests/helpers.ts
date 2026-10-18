@@ -36,18 +36,20 @@ export async function createTestContext(): Promise<TestContext> {
     JWT_SECRET: 'test-secret-that-is-long-enough-for-hs256',
     MAIL_DRIVER: 'json',
     DB_POOL_MAX: '20',
+    AUTH_RATE_LIMIT_PER_MINUTE: '100000',
   });
   const db = createPool(env.DATABASE_URL, env.DB_POOL_MAX);
   await migrate(db);
 
-  const redis = createRedis(env.REDIS_URL);
+  const redis = await createRedis(env.REDIS_URL, 'client');
+  const workerConnection = await createRedis(env.REDIS_URL, 'worker');
   await redis.flushdb();
   const queues = createQueues(redis);
   const app = await buildApp({ env, db, redis, queues });
   await app.ready();
 
   const mailer = new MemoryMailer();
-  const workers = startWorkers({ db, mailer, connection: redis, concurrency: 5, log: app.log });
+  const workers = await startWorkers({ db, mailer, queues, connection: workerConnection, concurrency: 5, log: app.log });
 
   return {
     app,
@@ -62,6 +64,7 @@ export async function createTestContext(): Promise<TestContext> {
       await app.close();
       await workers.close();
       await queues.close();
+      await workerConnection.quit();
       await redis.quit();
       await db.end();
     },

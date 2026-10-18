@@ -8,7 +8,7 @@ const schema = z
 
     DATABASE_URL: z.string().min(1),
     REDIS_URL: z.string().min(1),
-    DB_POOL_MAX: z.coerce.number().int().positive().default(10),
+    DB_POOL_MAX: z.coerce.number().int().positive().default(20),
 
     JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
     JWT_EXPIRES_IN: z.string().default('1h'),
@@ -19,6 +19,8 @@ const schema = z
       .default('true')
       .transform((v) => v === 'true'),
     WORKER_CONCURRENCY: z.coerce.number().int().positive().default(10),
+    MAX_IN_FLIGHT: z.coerce.number().int().positive().default(2000),
+    AUTH_RATE_LIMIT_PER_MINUTE: z.coerce.number().int().positive().default(20),
 
     MAIL_DRIVER: z.enum(['brevo', 'smtp', 'json']).default('json'),
     MAIL_FROM_EMAIL: z.string().email().default('no-reply@example.com'),

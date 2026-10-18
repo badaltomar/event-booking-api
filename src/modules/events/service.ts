@@ -1,9 +1,10 @@
-import type { Db } from '../../db/pool.js';
+import type { Db, Tx } from '../../db/pool.js';
 import { withTransaction } from '../../db/pool.js';
 import type { EventChanges } from '../../emails/templates.js';
 import { badRequest, conflict, forbidden, notFound } from '../../lib/errors.js';
 import { toPage, type Pagination } from '../../lib/schemas.js';
 import type { Queues } from '../../queue/index.js';
+import { lockShards, resizeShards, shardCountFor, totalRemaining } from './inventory.js';
 import type { CreateEventInput, ListEventsQuery, UpdateEventInput } from './schemas.js';
 
 interface EventRow {
@@ -22,6 +23,14 @@ interface EventRow {
   updated_at: Date;
 }
 
+/** Every event read goes through this so availability is always the sum of the inventory shards. */
+const SELECT_EVENT = `
+  SELECT e.*, COALESCE(inv.available, 0)::int AS available_tickets
+    FROM events e
+    LEFT JOIN LATERAL (
+      SELECT SUM(remaining) AS available FROM event_inventory WHERE event_id = e.id
+    ) inv ON true`;
+
 export const toEvent = (row: EventRow) => ({
   id: row.id,
   organizerId: row.organizer_id,
@@ -39,21 +48,26 @@ export const toEvent = (row: EventRow) => ({
 
 const escapeLike = (value: string) => value.replace(/[\\%_]/g, (c) => `\\${c}`);
 
-export function createEventService({ db, queues }: { db: Db; queues: Queues }) {
-  async function getOwnedEvent(eventId: string, organizerId: string) {
-    const { rows } = await db.query<EventRow>('SELECT * FROM events WHERE id = $1', [eventId]);
-    const row = rows[0];
-    if (!row) throw notFound('Event');
-    if (row.organizer_id !== organizerId) throw forbidden('You can only manage your own events');
-    return row;
-  }
+async function findEvent(db: Db | Tx, eventId: string): Promise<EventRow | undefined> {
+  const { rows } = await db.query<EventRow>(`${SELECT_EVENT} WHERE e.id = $1`, [eventId]);
+  return rows[0];
+}
 
+export function createEventService({ db, queues }: { db: Db; queues: Queues }) {
   return {
     async create(organizerId: string, input: CreateEventInput) {
+      const shards = shardCountFor(input.capacity);
       const { rows } = await db.query<EventRow>(
-        `INSERT INTO events (organizer_id, title, description, venue, starts_at, ends_at, capacity, available_tickets, price_cents)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
-         RETURNING *`,
+        `WITH created AS (
+           INSERT INTO events (organizer_id, title, description, venue, starts_at, ends_at, capacity, price_cents)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           RETURNING *
+         ), stock AS (
+           INSERT INTO event_inventory (event_id, shard, remaining)
+           SELECT created.id, g, $7::int / $9::int + CASE WHEN g < $7::int % $9::int THEN 1 ELSE 0 END
+             FROM created, generate_series(0, $9::int - 1) g
+         )
+         SELECT created.*, created.capacity AS available_tickets FROM created`,
         [
           organizerId,
           input.title,
@@ -63,6 +77,7 @@ export function createEventService({ db, queues }: { db: Db; queues: Queues }) {
           input.endsAt ?? null,
           input.capacity,
           input.priceCents,
+          shards,
         ],
       );
       return toEvent(rows[0]!);
@@ -71,10 +86,10 @@ export function createEventService({ db, queues }: { db: Db; queues: Queues }) {
     async list(query: ListEventsQuery) {
       const pattern = query.q ? `%${escapeLike(query.q)}%` : null;
       const { rows } = await db.query<EventRow>(
-        `SELECT * FROM events
-          WHERE starts_at >= COALESCE($1::timestamptz, now())
-            AND ($2::text IS NULL OR title ILIKE $2)
-          ORDER BY starts_at, id
+        `${SELECT_EVENT}
+          WHERE e.starts_at >= COALESCE($1::timestamptz, now())
+            AND ($2::text IS NULL OR e.title ILIKE $2)
+          ORDER BY e.starts_at, e.id
           LIMIT $3 OFFSET $4`,
         [query.from ?? null, pattern, query.limit + 1, query.offset],
       );
@@ -83,21 +98,22 @@ export function createEventService({ db, queues }: { db: Db; queues: Queues }) {
 
     async listByOrganizer(organizerId: string, pagination: Pagination) {
       const { rows } = await db.query<EventRow>(
-        `SELECT * FROM events WHERE organizer_id = $1 ORDER BY starts_at DESC, id LIMIT $2 OFFSET $3`,
+        `${SELECT_EVENT} WHERE e.organizer_id = $1 ORDER BY e.starts_at DESC, e.id LIMIT $2 OFFSET $3`,
         [organizerId, pagination.limit + 1, pagination.offset],
       );
       return toPage(rows.map(toEvent), pagination);
     },
 
     async getById(eventId: string) {
-      const { rows } = await db.query<EventRow>('SELECT * FROM events WHERE id = $1', [eventId]);
-      if (!rows[0]) throw notFound('Event');
-      return toEvent(rows[0]);
+      const event = await findEvent(db, eventId);
+      if (!event) throw notFound('Event');
+      return toEvent(event);
     },
 
     async update(eventId: string, organizerId: string, patch: UpdateEventInput) {
-      const { updated, changes } = await withTransaction(db, async (tx) => {
-        const { rows } = await tx.query<EventRow>('SELECT * FROM events WHERE id = $1 FOR UPDATE', [eventId]);
+      const updated = await withTransaction(db, async (tx) => {
+        // NO KEY UPDATE does not block the foreign key checks of concurrent bookings.
+        const { rows } = await tx.query<EventRow>('SELECT * FROM events WHERE id = $1 FOR NO KEY UPDATE', [eventId]);
         const current = rows[0];
         if (!current) throw notFound('Event');
         if (current.organizer_id !== organizerId) throw forbidden('You can only manage your own events');
@@ -110,41 +126,54 @@ export function createEventService({ db, queues }: { db: Db; queues: Queues }) {
           endsAt: patch.endsAt === undefined ? current.ends_at : patch.endsAt === null ? null : new Date(patch.endsAt),
           capacity: patch.capacity ?? current.capacity,
         };
-
         if (next.endsAt && next.endsAt <= next.startsAt) {
           throw badRequest('endsAt must be after startsAt');
         }
-        const sold = current.capacity - current.available_tickets;
-        if (next.capacity < sold) {
-          throw conflict('CAPACITY_BELOW_BOOKED', `Capacity cannot be lower than the ${sold} tickets already booked`);
-        }
 
         const changes = diffVisibleFields(current, next);
-        const capacityChanged = next.capacity !== current.capacity;
-        if (Object.keys(changes).length === 0 && !capacityChanged) {
-          return { updated: current, changes };
+        const capacityDelta = next.capacity - current.capacity;
+        if (Object.keys(changes).length === 0 && capacityDelta === 0) {
+          return (await findEvent(tx, eventId))!;
         }
 
-        const result = await tx.query<EventRow>(
+        if (capacityDelta !== 0) {
+          const shards = await lockShards(tx, eventId);
+          const sold = current.capacity - totalRemaining(shards);
+          if (next.capacity < sold) {
+            throw conflict('CAPACITY_BELOW_BOOKED', `Capacity cannot be lower than the ${sold} tickets already booked`);
+          }
+          await resizeShards(tx, eventId, shards, capacityDelta);
+        }
+
+        const result = await tx.query<{ version: number }>(
           `UPDATE events
               SET title = $2, description = $3, venue = $4, starts_at = $5, ends_at = $6,
-                  capacity = $7, available_tickets = available_tickets + ($7 - capacity),
-                  version = version + 1, updated_at = now()
+                  capacity = $7, version = version + 1, updated_at = now()
             WHERE id = $1
-            RETURNING *`,
+            RETURNING version`,
           [eventId, next.title, next.description, next.venue, next.startsAt, next.endsAt, next.capacity],
         );
-        return { updated: result.rows[0]!, changes };
-      });
+        const { version } = result.rows[0]!;
 
-      if (Object.keys(changes).length > 0) {
-        await notifyAttendees(updated, changes);
-      }
+        // Queued before COMMIT so a failed enqueue rolls the update back and the organizer can retry.
+        // The worker waits for this version to be visible, so it never reacts to a rolled back update.
+        if (Object.keys(changes).length > 0) {
+          await queues.eventUpdateFanout.add(
+            'fan-out',
+            { eventId, version, changes },
+            { jobId: `event-update-${eventId}-${version}` },
+          );
+        }
+        return (await findEvent(tx, eventId))!;
+      });
       return toEvent(updated);
     },
 
     async listAttendees(eventId: string, organizerId: string, pagination: Pagination) {
-      await getOwnedEvent(eventId, organizerId);
+      const owner = await db.query<{ organizer_id: string }>('SELECT organizer_id FROM events WHERE id = $1', [eventId]);
+      if (!owner.rows[0]) throw notFound('Event');
+      if (owner.rows[0].organizer_id !== organizerId) throw forbidden('You can only manage your own events');
+
       const { rows } = await db.query<{
         id: string;
         customer_id: string;
@@ -176,20 +205,6 @@ export function createEventService({ db, queues }: { db: Db; queues: Queues }) {
       );
     },
   };
-
-  async function notifyAttendees(event: EventRow, changes: EventChanges) {
-    const { rows } = await db.query<{ customer_id: string }>(
-      'SELECT DISTINCT customer_id FROM bookings WHERE event_id = $1',
-      [event.id],
-    );
-    for (const { customer_id } of rows) {
-      await queues.eventUpdate.add(
-        'event-update-email',
-        { eventId: event.id, customerId: customer_id, changes },
-        { jobId: `event-update-${event.id}-${event.version}-${customer_id}` },
-      );
-    }
-  }
 }
 
 export type EventService = ReturnType<typeof createEventService>;

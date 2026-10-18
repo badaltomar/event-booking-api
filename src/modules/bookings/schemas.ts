@@ -7,6 +7,10 @@ export const createBookingBody = z.object({
   quantity: z.number().int().min(1).max(MAX_TICKETS_PER_BOOKING),
 });
 
+export const idempotencyHeaders = z.object({
+  'idempotency-key': z.string().trim().min(8).max(100).optional(),
+});
+
 export const bookingResponse = z.object({
   id: z.uuid(),
   eventId: z.uuid(),

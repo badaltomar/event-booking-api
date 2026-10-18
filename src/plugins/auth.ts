@@ -1,6 +1,5 @@
 import fastifyJwt from '@fastify/jwt';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import type { Db } from '../db/pool.js';
 import { forbidden, unauthorized } from '../lib/errors.js';
 import type { Role } from '../lib/schemas.js';
 
@@ -19,12 +18,16 @@ declare module 'fastify' {
 }
 
 interface AuthOptions {
-  db: Db;
   secret: string;
   expiresIn: string;
 }
 
-export async function registerAuth(app: FastifyInstance, { db, secret, expiresIn }: AuthOptions): Promise<void> {
+/**
+ * Tokens are stateless: the signature and expiry prove identity and role, so no database
+ * lookup happens per request. The trade-off is that a deleted user or changed role is only
+ * noticed once the (short lived) token expires.
+ */
+export async function registerAuth(app: FastifyInstance, { secret, expiresIn }: AuthOptions): Promise<void> {
   await app.register(fastifyJwt, { secret, sign: { expiresIn } });
 
   app.decorate('authenticate', async (request: FastifyRequest) => {
@@ -33,10 +36,6 @@ export async function registerAuth(app: FastifyInstance, { db, secret, expiresIn
     } catch {
       throw unauthorized('Missing or invalid access token');
     }
-
-    const { rows } = await db.query<{ role: Role }>('SELECT role FROM users WHERE id = $1', [request.user.sub]);
-    if (!rows[0]) throw unauthorized('Account no longer exists');
-    request.user.role = rows[0].role;
   });
 
   app.decorate('requireRole', (...roles: Role[]) => async (request: FastifyRequest) => {

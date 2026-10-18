@@ -4,9 +4,11 @@ import { errors } from '../../lib/schemas.js';
 import { authResponse, loginBody, registerBody, userResponse } from './schemas.js';
 import type { AuthService } from './service.js';
 
-export function authRoutes(service: AuthService) {
+export function authRoutes(service: AuthService, attemptsPerMinute: number) {
   return async (app: FastifyInstance) => {
     const r = app.withTypeProvider<ZodTypeProvider>();
+    // Password hashing is deliberately expensive, so these two routes are throttled per client IP.
+    const rateLimit = { rateLimit: { max: attemptsPerMinute, timeWindow: '1 minute' } };
 
     r.post(
       '/auth/register',
@@ -15,8 +17,9 @@ export function authRoutes(service: AuthService) {
           tags: ['Auth'],
           summary: 'Create an organizer or customer account',
           body: registerBody,
-          response: { 201: authResponse, ...errors(400, 409) },
+          response: { 201: authResponse, ...errors(400, 409, 429) },
         },
+        config: rateLimit,
       },
       async (request, reply) => {
         const user = await service.register(request.body);
@@ -32,8 +35,9 @@ export function authRoutes(service: AuthService) {
           tags: ['Auth'],
           summary: 'Exchange email and password for an access token',
           body: loginBody,
-          response: { 200: authResponse, ...errors(400, 401) },
+          response: { 200: authResponse, ...errors(400, 401, 429) },
         },
+        config: rateLimit,
       },
       async (request) => {
         const user = await service.login(request.body);

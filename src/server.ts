@@ -8,7 +8,7 @@ import { startWorkers } from './workers/index.js';
 
 const env = loadEnv();
 const db = createPool(env.DATABASE_URL, env.DB_POOL_MAX);
-const redis = createRedis(env.REDIS_URL);
+const redis = await createRedis(env.REDIS_URL, 'client');
 const queues = createQueues(redis);
 const app = await buildApp({ env, db, redis, queues });
 
@@ -16,16 +16,17 @@ if (env.RUN_MIGRATIONS) {
   await migrate(db, (msg) => app.log.info(msg));
 }
 
-const workers =
-  env.PROCESS_ROLE === 'api'
-    ? null
-    : startWorkers({
-        db,
-        mailer: createMailer(env),
-        connection: redis,
-        concurrency: env.WORKER_CONCURRENCY,
-        log: app.log,
-      });
+const workerConnection = env.PROCESS_ROLE === 'api' ? null : await createRedis(env.REDIS_URL, 'worker');
+const workers = workerConnection
+  ? await startWorkers({
+      db,
+      mailer: createMailer(env),
+      queues,
+      connection: workerConnection,
+      concurrency: env.WORKER_CONCURRENCY,
+      log: app.log,
+    })
+  : null;
 
 if (env.PROCESS_ROLE !== 'worker') {
   await app.listen({ port: env.PORT, host: '0.0.0.0' });
@@ -41,6 +42,7 @@ async function shutdown(signal: string) {
     await app.close();
     await workers?.close();
     await queues.close();
+    await workerConnection?.quit();
     await redis.quit();
     await db.end();
   } catch (err) {

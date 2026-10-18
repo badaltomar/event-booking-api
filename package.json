@@ -13,7 +13,10 @@
     "start": "node dist/server.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "migrate": "tsx --env-file-if-exists=.env src/db/migrate-cli.ts"
+    "migrate": "tsx --env-file-if-exists=.env src/db/migrate-cli.ts",
+    "loadtest:seed": "tsx --env-file-if-exists=.env loadtest/seed.ts",
+    "loadtest:sweep": "tsx --env-file-if-exists=.env loadtest/sweep.ts",
+    "loadtest:updates": "tsx --env-file-if-exists=.env loadtest/updates.ts"
   },
   "dependencies": {
     "@fastify/jwt": "^10.2.5",

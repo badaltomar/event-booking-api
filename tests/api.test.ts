@@ -144,8 +144,73 @@ describe('booking tickets', () => {
     expect(statuses.filter((s) => s === 201)).toHaveLength(5);
     expect(statuses.filter((s) => s === 409)).toHaveLength(15);
 
-    const { rows } = await ctx.db.query('SELECT available_tickets, (SELECT count(*) FROM bookings) AS booked FROM events');
-    expect(rows[0]).toMatchObject({ available_tickets: 0, booked: '5' });
+    const { rows } = await ctx.db.query(
+      'SELECT (SELECT SUM(remaining) FROM event_inventory) AS remaining, (SELECT count(*) FROM bookings) AS booked',
+    );
+    expect(rows[0]).toMatchObject({ remaining: '0', booked: '5' });
+  });
+
+  it('keeps selling correctly when tickets are spread over several inventory shards', async () => {
+    const organizer = await registerUser(ctx.app, 'organizer');
+    const event = await createEvent(ctx.app, organizer.token, { capacity: 1000 });
+    const customers = await Promise.all(Array.from({ length: 120 }, () => registerUser(ctx.app, 'customer')));
+
+    const responses = await Promise.all(
+      customers.map((c) =>
+        ctx.app.inject({
+          method: 'POST',
+          url: `/events/${event.id}/bookings`,
+          headers: bearer(c.token),
+          payload: { quantity: 10 },
+        }),
+      ),
+    );
+
+    const booked = responses.filter((r) => r.statusCode === 201).length;
+    expect(booked).toBe(100);
+    expect(responses.filter((r) => r.statusCode === 409)).toHaveLength(20);
+
+    const shown = await ctx.app.inject({ method: 'GET', url: `/events/${event.id}`, headers: bearer(organizer.token) });
+    expect(shown.json().availableTickets).toBe(0);
+  });
+
+  it('combines tickets from several shards when no single shard can cover the order', async () => {
+    const organizer = await registerUser(ctx.app, 'organizer');
+    const customer = await registerUser(ctx.app, 'customer');
+    const event = await createEvent(ctx.app, organizer.token, { capacity: 200 });
+    await ctx.db.query('UPDATE event_inventory SET remaining = 3 WHERE event_id = $1', [event.id]);
+
+    const res = await ctx.app.inject({
+      method: 'POST',
+      url: `/events/${event.id}/bookings`,
+      headers: bearer(customer.token),
+      payload: { quantity: 5 },
+    });
+    expect(res.statusCode).toBe(201);
+
+    const { rows } = await ctx.db.query('SELECT SUM(remaining) AS remaining FROM event_inventory WHERE event_id = $1', [event.id]);
+    expect(rows[0].remaining).toBe('1');
+  });
+
+  it('returns the original booking when a request is retried with the same idempotency key', async () => {
+    const organizer = await registerUser(ctx.app, 'organizer');
+    const customer = await registerUser(ctx.app, 'customer');
+    const event = await createEvent(ctx.app, organizer.token, { capacity: 10 });
+    const request = {
+      method: 'POST' as const,
+      url: `/events/${event.id}/bookings`,
+      headers: { ...bearer(customer.token), 'idempotency-key': 'retry-safe-0001' },
+      payload: { quantity: 2 },
+    };
+
+    const first = await ctx.app.inject(request);
+    const retry = await ctx.app.inject(request);
+    expect(first.statusCode).toBe(201);
+    expect(retry.statusCode).toBe(200);
+    expect(retry.json().id).toBe(first.json().id);
+
+    const shown = await ctx.app.inject({ method: 'GET', url: `/events/${event.id}`, headers: bearer(organizer.token) });
+    expect(shown.json().availableTickets).toBe(8);
   });
 
   it('rejects a booking larger than the remaining tickets', async () => {
