@@ -5,6 +5,5 @@ dist
 coverage
 loadtest/tokens.json
 loadtest/.state
-.claude
 loadtest/results/last-run.json
 loadtest/results
